@@ -9,8 +9,10 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Building2 } from "lucide-react";
+import { Plus, Search, Building2, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 
 const TURLER = ["Şahıs", "Limited", "Anonim", "Diğer"];
 const BEYAN = ["KDV1", "KDV2", "MUHSGK", "Damga", "Geçici Vergi", "Gelir Vergisi", "Kurumlar", "BA/BS"];
@@ -21,6 +23,8 @@ export default function Clients() {
   const [tur, setTur] = useState("hepsi");
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ beyanname_turleri: ["KDV1", "MUHSGK"] });
+  const [editId, setEditId] = useState(null);
+  const [delTarget, setDelTarget] = useState(null);
   const nav = useNavigate();
   const [sp] = useSearchParams();
 
@@ -31,15 +35,32 @@ export default function Clients() {
     api.get("/clients", { params }).then((r) => setClients(r.data));
   };
   useEffect(() => { load(); }, [q, tur]);
-  useEffect(() => { if (sp.get("yeni")) setOpen(true); }, [sp]);
+  useEffect(() => { if (sp.get("yeni")) { setEditId(null); setForm({ beyanname_turleri: ["KDV1", "MUHSGK"] }); setOpen(true); } }, [sp]);
+
+  const openNew = () => { setEditId(null); setForm({ beyanname_turleri: ["KDV1", "MUHSGK"] }); setOpen(true); };
+  const openEdit = (c) => { setEditId(c.id); setForm({ ...c, beyanname_turleri: c.beyanname_turleri || [] }); setOpen(true); };
 
   const save = async () => {
     if (!form.unvan) return toast.error("Ünvan zorunlu");
     try {
-      await api.post("/clients", { ...form, aylik_ucret: Number(form.aylik_ucret) || 0 });
-      toast.success("Mükellef eklendi");
-      setOpen(false); setForm({ beyanname_turleri: ["KDV1", "MUHSGK"] }); load();
-    } catch (e) { toast.error("Kayıt başarısız"); }
+      const payload = { ...form, aylik_ucret: Number(form.aylik_ucret) || 0 };
+      if (editId) {
+        await api.put(`/clients/${editId}`, payload);
+        toast.success("Mükellef güncellendi");
+      } else {
+        await api.post("/clients", payload);
+        toast.success("Mükellef eklendi");
+      }
+      setOpen(false); setEditId(null); setForm({ beyanname_turleri: ["KDV1", "MUHSGK"] }); load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Kayıt başarısız"); }
+  };
+
+  const confirmDelete = async () => {
+    try {
+      await api.delete(`/clients/${delTarget.id}`);
+      toast.success("Mükellef pasife alındı");
+      setDelTarget(null); load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Silme başarısız"); }
   };
 
   const toggleBeyan = (b) => {
@@ -54,7 +75,7 @@ export default function Clients() {
           <h1 className="font-head text-3xl font-semibold tracking-tight">Mükellefler</h1>
           <p className="text-sm text-muted-foreground mt-1">{clients.length} kayıt</p>
         </div>
-        <Button data-testid="add-client-btn" onClick={() => setOpen(true)}><Plus size={16} className="mr-1.5" /> Yeni Mükellef</Button>
+        <Button data-testid="add-client-btn" onClick={openNew}><Plus size={16} className="mr-1.5" /> Yeni Mükellef</Button>
       </div>
 
       <div className="flex gap-3 flex-wrap">
@@ -82,6 +103,7 @@ export default function Clients() {
                 <th className="text-left font-medium px-4 py-3">Sorumlu</th>
                 <th className="text-right font-medium px-4 py-3">Aylık Ücret</th>
                 <th className="text-center font-medium px-4 py-3">Durum</th>
+                <th className="text-center font-medium px-4 py-3 w-12">İşlem</th>
               </tr>
             </thead>
             <tbody>
@@ -94,9 +116,20 @@ export default function Clients() {
                   <td className="px-4 py-3 text-muted-foreground">{c.sorumlu_personel}</td>
                   <td className="px-4 py-3 text-right font-medium">{fmtTL(c.aylik_ucret)}</td>
                   <td className="px-4 py-3 text-center">{c.aktif ? <span className="text-emerald-600 text-xs">Aktif</span> : <span className="text-muted-foreground text-xs">Pasif</span>}</td>
+                  <td className="px-4 py-3 text-center" onClick={(e) => e.stopPropagation()}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button data-testid={`client-actions-${c.id}`} className="p-1.5 rounded-md hover:bg-secondary text-muted-foreground"><MoreHorizontal size={16} /></button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem data-testid={`client-edit-${c.id}`} onClick={() => openEdit(c)}><Pencil size={14} className="mr-2" /> Düzenle</DropdownMenuItem>
+                        <DropdownMenuItem data-testid={`client-delete-${c.id}`} onClick={() => setDelTarget(c)} className="text-rose-600 focus:text-rose-600"><Trash2 size={14} className="mr-2" /> Sil</DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </td>
                 </tr>
               ))}
-              {clients.length === 0 && <tr><td colSpan={6} className="text-center py-10 text-muted-foreground">Kayıt bulunamadı</td></tr>}
+              {clients.length === 0 && <tr><td colSpan={7} className="text-center py-10 text-muted-foreground">Kayıt bulunamadı</td></tr>}
             </tbody>
           </table>
         </div>
@@ -104,7 +137,7 @@ export default function Clients() {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Yeni Mükellef</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{editId ? "Mükellef Düzenle" : "Yeni Mükellef"}</DialogTitle></DialogHeader>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 py-2">
             {[["unvan", "Ünvan *"], ["vkn", "Vergi Kimlik No"], ["tckn", "TC Kimlik No"], ["vergi_dairesi", "Vergi Dairesi"],
               ["nace", "NACE Kodu"], ["faaliyet", "Faaliyet Konusu"], ["telefon", "Telefon"], ["email", "E-posta"],
@@ -142,10 +175,25 @@ export default function Clients() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>İptal</Button>
-            <Button data-testid="save-client-btn" onClick={save}>Kaydet</Button>
+            <Button data-testid="save-client-btn" onClick={save}>{editId ? "Güncelle" : "Kaydet"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!delTarget} onOpenChange={(v) => !v && setDelTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Mükellefi sil</AlertDialogTitle>
+            <AlertDialogDescription>
+              <strong>{delTarget?.unvan}</strong> pasife alınacaktır. Geçmiş kayıtları (beyanname, cari, görev) korunur. Devam etmek istiyor musunuz?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Vazgeç</AlertDialogCancel>
+            <AlertDialogAction data-testid="confirm-delete-client" onClick={confirmDelete} className="bg-rose-600 hover:bg-rose-700">Sil</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
