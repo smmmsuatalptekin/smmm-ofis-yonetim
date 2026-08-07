@@ -10,6 +10,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
+import ClientDocuments from "@/components/ClientDocuments";
 import { toast } from "sonner";
 import { ArrowLeft, Phone, Mail, MapPin, Plus, Trash2, Pencil, FileDown, ArrowUpDown } from "lucide-react";
 
@@ -117,6 +118,7 @@ export default function ClientDetail() {
         <TabsList>
           <TabsTrigger value="genel" data-testid="tab-genel">Genel Bilgiler</TabsTrigger>
           <TabsTrigger value="cari" data-testid="tab-cari">Cari Hesap</TabsTrigger>
+          <TabsTrigger value="evraklar" data-testid="tab-evraklar">Evraklar</TabsTrigger>
           <TabsTrigger value="gorevler" data-testid="tab-gorevler">Görevler</TabsTrigger>
           <TabsTrigger value="beyanname" data-testid="tab-beyanname">Beyannameler</TabsTrigger>
         </TabsList>
@@ -200,6 +202,10 @@ export default function ClientDetail() {
               </tbody>
             </table>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="evraklar">
+          <ClientDocuments clientId={id} clientName={c.unvan} />
         </TabsContent>
 
         <TabsContent value="gorevler">

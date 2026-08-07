@@ -10,11 +10,13 @@ import logging
 import calendar as _cal
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional, Any
-from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, Depends
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, Depends, UploadFile, File, Form
+from fastapi.responses import StreamingResponse, FileResponse
 from starlette.middleware.cors import CORSMiddleware
 import io
 import re
+import uuid
+import mimetypes
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 from bson import ObjectId
@@ -463,6 +465,146 @@ async def statement_pdf(cid: str, start: Optional[str] = None, end: Optional[str
     return StreamingResponse(buf, media_type="application/pdf",
                              headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
+# ---------------- documents (Mükellef Evrak Yönetimi) ----------------
+UPLOAD_DIR = os.environ.get("UPLOAD_DIR", str(ROOT_DIR / "uploads"))
+MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "25"))
+ALLOWED_DOC_EXT = {".pdf", ".jpg", ".jpeg", ".png", ".xls", ".xlsx", ".doc", ".docx"}
+
+def _doc_serialize(d):
+    d = dict(d)
+    d["id"] = str(d.pop("_id"))
+    return d
+
+@api.post("/clients/{cid}/documents")
+async def upload_document(
+    cid: str,
+    file: UploadFile = File(...),
+    title: str = Form(...),
+    category: str = Form("Diğer"),
+    subcategory: str = Form(""),
+    document_date: str = Form(""),
+    period: str = Form(""),
+    description: str = Form(""),
+    tags: str = Form(""),
+    expiry_date: str = Form(""),
+    parent_document_id: str = Form(""),
+    user=Depends(get_current_user),
+):
+    client = await db.clients.find_one({"_id": ObjectId(cid)})
+    if not client:
+        raise HTTPException(404, "Mükellef bulunamadı")
+    if not title.strip():
+        raise HTTPException(400, "Belge adı zorunludur")
+    orig = os.path.basename(file.filename or "belge")
+    ext = os.path.splitext(orig)[1].lower()
+    if ext not in ALLOWED_DOC_EXT:
+        raise HTTPException(400, f"Desteklenmeyen dosya türü: {ext or 'bilinmiyor'}. İzin verilen: PDF, JPG, PNG, XLS(X), DOC(X)")
+    content = await file.read()
+    size = len(content)
+    if size == 0:
+        raise HTTPException(400, "Boş dosya yüklenemez")
+    if size > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(400, f"Dosya boyutu {MAX_UPLOAD_MB} MB sınırını aşıyor")
+    # secure random physical name; client isolation via subfolder
+    stored_name = f"{uuid.uuid4().hex}{ext}"
+    client_dir = os.path.join(UPLOAD_DIR, cid)
+    os.makedirs(client_dir, exist_ok=True)
+    abs_path = os.path.join(client_dir, stored_name)
+    with open(abs_path, "wb") as f:
+        f.write(content)
+    version = 1
+    parent = None
+    if parent_document_id:
+        parent = await db.documents.find_one({"_id": ObjectId(parent_document_id), "client_id": cid})
+        if parent:
+            root_id = parent.get("parent_document_id") or parent_document_id
+            cnt = await db.documents.count_documents({
+                "client_id": cid, "deleted_at": None,
+                "$or": [{"_id": ObjectId(root_id)}, {"parent_document_id": root_id}],
+            })
+            version = cnt + 1
+            parent_document_id = root_id
+    doc = {
+        "client_id": cid, "title": title.strip(), "category": category or "Diğer",
+        "subcategory": subcategory or "", "document_date": document_date or "", "period": period or "",
+        "description": description or "", "tags": [t.strip() for t in tags.split(",") if t.strip()],
+        "original_filename": orig, "stored_key": f"{cid}/{stored_name}",
+        "mime_type": file.content_type or mimetypes.guess_type(orig)[0] or "application/octet-stream",
+        "file_size": size, "expiry_date": expiry_date or "", "version": version,
+        "parent_document_id": parent_document_id or None, "uploaded_by": user.get("name"),
+        "created_at": now_utc().isoformat(), "updated_at": now_utc().isoformat(), "deleted_at": None,
+    }
+    r = await db.documents.insert_one(doc)
+    await log_audit(user, "create", "document", cid, f"{title} ({orig})")
+    doc["_id"] = r.inserted_id
+    return _doc_serialize(doc)
+
+@api.get("/clients/{cid}/documents")
+async def list_documents(cid: str, user=Depends(get_current_user), category: Optional[str] = None,
+                         period: Optional[str] = None, q: Optional[str] = None, tag: Optional[str] = None):
+    query = {"client_id": cid, "deleted_at": None}
+    if category:
+        query["category"] = category
+    if period:
+        query["period"] = period
+    if tag:
+        query["tags"] = tag
+    if q:
+        query["title"] = {"$regex": q, "$options": "i"}
+    docs = await db.documents.find(query).sort("created_at", -1).to_list(2000)
+    return [_doc_serialize(d) for d in docs]
+
+@api.get("/clients/{cid}/documents/{did}")
+async def get_document(cid: str, did: str, user=Depends(get_current_user)):
+    d = await db.documents.find_one({"_id": ObjectId(did), "client_id": cid, "deleted_at": None})
+    if not d:
+        raise HTTPException(404, "Belge bulunamadı")
+    return _doc_serialize(d)
+
+@api.get("/clients/{cid}/documents/{did}/download")
+async def download_document(cid: str, did: str, inline: Optional[str] = None, user=Depends(get_current_user)):
+    d = await db.documents.find_one({"_id": ObjectId(did), "client_id": cid, "deleted_at": None})
+    if not d:
+        raise HTTPException(404, "Belge bulunamadı")
+    # stored_key is always relative "cid/name" — rebuild safely, no traversal
+    safe_rel = os.path.normpath(d["stored_key"]).replace("\\", "/")
+    if safe_rel.startswith("..") or not safe_rel.startswith(f"{cid}/"):
+        raise HTTPException(400, "Geçersiz dosya yolu")
+    abs_path = os.path.join(UPLOAD_DIR, safe_rel)
+    if not os.path.isfile(abs_path):
+        raise HTTPException(404, "Dosya fiziksel olarak bulunamadı")
+    from urllib.parse import quote
+    disp = "inline" if inline else "attachment"
+    fn = quote(d.get("original_filename", "belge"))
+    return FileResponse(abs_path, media_type=d.get("mime_type", "application/octet-stream"),
+                        headers={"Content-Disposition": f"{disp}; filename*=UTF-8''{fn}"})
+
+@api.put("/clients/{cid}/documents/{did}")
+async def update_document(cid: str, did: str, body: dict, user=Depends(get_current_user)):
+    d = await db.documents.find_one({"_id": ObjectId(did), "client_id": cid, "deleted_at": None})
+    if not d:
+        raise HTTPException(404, "Belge bulunamadı")
+    allowed = {"title", "category", "subcategory", "document_date", "period", "description", "tags", "expiry_date"}
+    upd = {k: v for k, v in body.items() if k in allowed}
+    if "title" in upd and not str(upd["title"]).strip():
+        raise HTTPException(400, "Belge adı zorunludur")
+    if "tags" in upd and isinstance(upd["tags"], str):
+        upd["tags"] = [t.strip() for t in upd["tags"].split(",") if t.strip()]
+    upd["updated_at"] = now_utc().isoformat()
+    await db.documents.update_one({"_id": ObjectId(did)}, {"$set": upd})
+    await log_audit(user, "update", "document", cid, d.get("title"))
+    nd = await db.documents.find_one({"_id": ObjectId(did)})
+    return _doc_serialize(nd)
+
+@api.delete("/clients/{cid}/documents/{did}")
+async def delete_document(cid: str, did: str, user=Depends(get_current_user)):
+    d = await db.documents.find_one({"_id": ObjectId(did), "client_id": cid, "deleted_at": None})
+    if not d:
+        raise HTTPException(404, "Belge bulunamadı")
+    await db.documents.update_one({"_id": ObjectId(did)}, {"$set": {"deleted_at": now_utc().isoformat()}})
+    await log_audit(user, "delete", "document", cid, d.get("title"))
+    return {"ok": True}
+
 @api.post("/accrual/run")
 async def run_accrual(body: dict, user=Depends(get_current_user)):
     period = body["period"]  # YYYY-MM
@@ -812,6 +954,7 @@ async def seed():
 
 @app.on_event("startup")
 async def startup():
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
     await db.users.create_index("email", unique=True)
     await seed()
     # write test credentials
