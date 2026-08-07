@@ -291,12 +291,18 @@ async def update_edefter(body: dict, user=Depends(get_current_user)):
 
 # ---------------- cari / transactions ----------------
 @api.get("/clients/{cid}/transactions")
-async def client_transactions(cid: str, user=Depends(get_current_user)):
-    docs = await db.transactions.find({"client_id": cid}).sort("date", -1).to_list(1000)
-    txns = [serialize(d) for d in docs]
-    borc = sum(t["amount"] for t in txns if t["type"] == "borc")
-    alacak = sum(t["amount"] for t in txns if t["type"] == "alacak")
-    return {"transactions": txns, "borc": borc, "alacak": alacak, "bakiye": borc - alacak}
+async def client_transactions(cid: str, start: Optional[str] = None, end: Optional[str] = None, user=Depends(get_current_user)):
+    all_docs = await db.transactions.find({"client_id": cid}).to_list(20000)
+    all_txns = [serialize(d) for d in all_docs]
+    borc = sum(t["amount"] for t in all_txns if t["type"] == "borc")
+    alacak = sum(t["amount"] for t in all_txns if t["type"] == "alacak")
+    opening, rows, p_borc, p_alacak, p_end = _statement_calc(all_txns, start, end)
+    rows_sorted = sorted(rows, key=lambda t: (t.get("date") or t.get("created_at") or ""), reverse=True)
+    return {
+        "transactions": rows_sorted, "borc": borc, "alacak": alacak, "bakiye": borc - alacak,
+        "filtered": bool(start or end), "opening_balance": opening,
+        "period_borc": p_borc, "period_alacak": p_alacak, "period_end_balance": p_end,
+    }
 
 @api.post("/transactions")
 async def create_transaction(body: dict, user=Depends(get_current_user)):
@@ -323,6 +329,32 @@ async def delete_transaction(tid: str, user=Depends(get_current_user)):
     await db.transactions.delete_one({"_id": ObjectId(tid)})
     return {"ok": True}
 
+@api.post("/clients/{cid}/opening-balance")
+async def set_opening_balance(cid: str, body: dict, user=Depends(get_current_user)):
+    client = await db.clients.find_one({"_id": ObjectId(cid)})
+    if not client:
+        raise HTTPException(404, "Mükellef bulunamadı")
+    existing = await db.transactions.find_one({"client_id": cid, "kind": "acilis"})
+    if existing and not body.get("force"):
+        raise HTTPException(409, "Bu mükellef için zaten bir açılış/devir bakiyesi tanımlı")
+    if existing and body.get("force"):
+        await db.transactions.delete_one({"_id": existing["_id"]})
+    direction = body.get("direction", "borc")  # borc=Müşteri Borçlu, alacak=Müşteri Alacaklı
+    amount = float(body.get("amount") or 0)
+    if amount <= 0:
+        raise HTTPException(400, "Tutar 0'dan büyük olmalıdır")
+    doc = {
+        "client_id": cid, "type": "borc" if direction == "borc" else "alacak",
+        "amount": amount, "kind": "acilis",
+        "aciklama": body.get("aciklama") or "Açılış / Devir Bakiyesi",
+        "date": body.get("date") or now_utc().date().isoformat(),
+        "created_at": now_utc().isoformat(),
+    }
+    r = await db.transactions.insert_one(doc)
+    await log_audit(user, "create", "transaction", cid, f"açılış bakiyesi {direction} {amount}")
+    doc["_id"] = r.inserted_id
+    return serialize(doc)
+
 # ---------------- cari statement PDF ----------------
 def _tl(n):
     s = f"{abs(n):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -340,6 +372,38 @@ def _tr_date(iso):
         return iso or "-"
     y, m, d = iso[:4], iso[5:7], iso[8:10]
     return f"{d}.{m}.{y}"
+
+def _txn_label(t):
+    if t.get("kind") == "acilis":
+        return "Devir / Açılış Bakiyesi"
+    return "Borç/Tahakkuk" if t.get("type") == "borc" else "Tahsilat"
+
+# Single source of truth for cari balance across screen, PDF and Excel.
+def _statement_calc(all_txns, start=None, end=None):
+    ordered = sorted(all_txns, key=lambda t: (_txn_date(t) or "0000-00-00", str(t.get("created_at") or "")))
+    opening = 0.0
+    if start:
+        for t in ordered:
+            if _txn_date(t) < start:
+                opening += float(t.get("amount") or 0) * (1 if t.get("type") == "borc" else -1)
+    running = opening
+    rows = []
+    p_borc = 0.0
+    p_alacak = 0.0
+    for t in ordered:
+        d = _txn_date(t)
+        if start and d < start:
+            continue
+        if end and d > end:
+            continue
+        amt = float(t.get("amount") or 0)
+        if t.get("type") == "borc":
+            running += amt; p_borc += amt
+        else:
+            running -= amt; p_alacak += amt
+        r = dict(t); r["running"] = running
+        rows.append(r)
+    return opening, rows, p_borc, p_alacak, running
 
 _FONTS_READY = False
 def _ensure_fonts():
@@ -396,25 +460,26 @@ async def statement_pdf(cid: str, start: Optional[str] = None, end: Optional[str
 
     header = ["Tarih", "İşlem Türü", "Açıklama", "Borç", "Alacak", "Bakiye"]
     data = [header]
-    running = 0.0
-    total_borc = 0.0
-    total_alacak = 0.0
-    for t in txns:
-        amt = float(t.get("amount") or 0)
+    if start:
+        data.append([
+            Paragraph(_tr_date(start), cell),
+            Paragraph("Dönem Başı Devir", cell),
+            Paragraph("Önceki dönemden devreden bakiye", cell),
+            Paragraph("-", cell), Paragraph("-", cell),
+            Paragraph(_tl(opening), cell),
+        ])
+    for t in rows:
         is_borc = t.get("type") == "borc"
-        if is_borc:
-            running += amt; total_borc += amt
-        else:
-            running -= amt; total_alacak += amt
+        amt = float(t.get("amount") or 0)
         data.append([
             Paragraph(_tr_date(_txn_date(t)), cell),
-            Paragraph("Borç/Tahakkuk" if is_borc else "Tahsilat", cell),
+            Paragraph(_txn_label(t), cell),
             Paragraph((t.get("aciklama") or "-"), cell),
             Paragraph(_tl(amt) if is_borc else "-", cell),
             Paragraph(_tl(amt) if not is_borc else "-", cell),
-            Paragraph(_tl(running), cell),
+            Paragraph(_tl(t["running"]), cell),
         ])
-    if len(data) == 1:
+    if len(rows) == 0 and not start:
         data.append([Paragraph("Bu aralıkta hareket bulunmamaktadır.", cell), "", "", "", "", ""])
 
     tbl = Table(data, colWidths=[22 * mm, 26 * mm, 58 * mm, 24 * mm, 24 * mm, 26 * mm], repeatRows=1)
@@ -436,21 +501,24 @@ async def statement_pdf(cid: str, start: Optional[str] = None, end: Optional[str
     elems.append(tbl)
     elems.append(Spacer(1, 14))
 
-    bakiye = total_borc - total_alacak
-    summary = Table([
-        ["Toplam Borç", _tl(total_borc)],
-        ["Toplam Alacak", _tl(total_alacak)],
-        ["Güncel Bakiye", _tl(bakiye)],
-    ], colWidths=[40 * mm, 40 * mm], hAlign="RIGHT")
+    bakiye = p_end
+    srows = []
+    if start:
+        srows.append(["Dönem Başı Bakiyesi", _tl(opening)])
+    srows.append([("Dönem Borç Toplamı" if start else "Toplam Borç"), _tl(p_borc)])
+    srows.append([("Dönem Alacak Toplamı" if start else "Toplam Alacak"), _tl(p_alacak)])
+    srows.append([("Dönem Sonu Bakiyesi" if start else "Güncel Bakiye"), _tl(bakiye)])
+    last = len(srows) - 1
+    summary = Table(srows, colWidths=[48 * mm, 40 * mm], hAlign="RIGHT")
     summary.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), "DejaVu"),
-        ("FONTNAME", (0, 2), (-1, 2), "DejaVu-Bold"),
+        ("FONTNAME", (0, last), (-1, last), "DejaVu-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 10),
         ("ALIGN", (1, 0), (1, -1), "RIGHT"),
         ("TOPPADDING", (0, 0), (-1, -1), 5),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LINEABOVE", (0, 2), (-1, 2), 0.8, colors.HexColor("#0f172a")),
-        ("TEXTCOLOR", (1, 2), (1, 2), colors.HexColor("#e11d48") if bakiye > 0 else colors.HexColor("#059669")),
+        ("LINEABOVE", (0, last), (-1, last), 0.8, colors.HexColor("#0f172a")),
+        ("TEXTCOLOR", (1, last), (1, last), colors.HexColor("#e11d48") if bakiye > 0 else colors.HexColor("#059669")),
     ]))
     elems.append(summary)
     elems.append(Spacer(1, 18))
@@ -463,6 +531,86 @@ async def statement_pdf(cid: str, start: Optional[str] = None, end: Optional[str
     rng = f"{(start or 'tum')}_{(end or 'guncel')}"
     fname = f"{safe}_Cari_Ekstre_{rng}.pdf"
     return StreamingResponse(buf, media_type="application/pdf",
+                             headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+@api.get("/clients/{cid}/statement/xlsx")
+async def statement_xlsx(cid: str, start: Optional[str] = None, end: Optional[str] = None, user=Depends(get_current_user)):
+    c = await db.clients.find_one({"_id": ObjectId(cid)})
+    if not c:
+        raise HTTPException(404, "Mükellef bulunamadı")
+    all_docs = await db.transactions.find({"client_id": cid}).to_list(20000)
+    all_txns = [serialize(d) for d in all_docs]
+    opening, rows, p_borc, p_alacak, p_end = _statement_calc(all_txns, start, end)
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill
+    from datetime import date as _date
+    TL = '#,##0.00" TL"'
+
+    def _to_date(s):
+        try:
+            return _date(int(s[:4]), int(s[5:7]), int(s[8:10]))
+        except Exception:
+            return None
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Cari Ekstre"
+    ws["A1"] = "CARİ HESAP EKSTRESİ"; ws["A1"].font = Font(bold=True, size=14)
+    ws["A2"] = c.get("unvan", "-"); ws["A2"].font = Font(bold=True, size=11)
+    ws["A3"] = f"VKN/TCKN: {c.get('vkn') or c.get('tckn') or '-'}"
+    aralik = "Tüm Hareketler" if not (start or end) else f"{_tr_date(start) if start else 'Başlangıç'} - {_tr_date(end) if end else 'Bugün'}"
+    ws["A4"] = f"Rapor Aralığı: {aralik}"
+    ws["A5"] = f"Oluşturma Tarihi: {_tr_date(now_utc().date().isoformat())}"
+
+    hrow = 7
+    for i, h in enumerate(["Tarih", "İşlem Türü", "Açıklama", "Borç", "Alacak", "Bakiye"]):
+        cc = ws.cell(row=hrow, column=i + 1, value=h)
+        cc.font = Font(bold=True, color="FFFFFF")
+        cc.fill = PatternFill("solid", fgColor="0F172A")
+        cc.alignment = Alignment(horizontal="center")
+    r = hrow + 1
+    if start:
+        dc = ws.cell(row=r, column=1, value=_to_date(start)); dc.number_format = "DD.MM.YYYY"
+        ws.cell(row=r, column=2, value="Dönem Başı Devir")
+        ws.cell(row=r, column=3, value="Önceki dönemden devreden bakiye")
+        bc = ws.cell(row=r, column=6, value=opening); bc.number_format = TL
+        r += 1
+    for t in rows:
+        is_borc = t.get("type") == "borc"
+        amt = float(t.get("amount") or 0)
+        dc = ws.cell(row=r, column=1, value=_to_date(_txn_date(t))); dc.number_format = "DD.MM.YYYY"
+        ws.cell(row=r, column=2, value=_txn_label(t))
+        ws.cell(row=r, column=3, value=t.get("aciklama") or "")
+        if is_borc:
+            vc = ws.cell(row=r, column=4, value=amt); vc.number_format = TL
+        else:
+            vc = ws.cell(row=r, column=5, value=amt); vc.number_format = TL
+        rc = ws.cell(row=r, column=6, value=t["running"]); rc.number_format = TL
+        r += 1
+    data_last = r - 1
+    r += 1
+    summary = []
+    if start:
+        summary.append(("Dönem Başı Bakiyesi", opening))
+    summary.append(("Dönem Borç Toplamı" if start else "Toplam Borç", p_borc))
+    summary.append(("Dönem Alacak Toplamı" if start else "Toplam Alacak", p_alacak))
+    summary.append(("Dönem Sonu Bakiyesi" if start else "Güncel Bakiye", p_end))
+    for lbl, val in summary:
+        lc = ws.cell(row=r, column=5, value=lbl); lc.font = Font(bold=True)
+        vc = ws.cell(row=r, column=6, value=val); vc.number_format = TL; vc.font = Font(bold=True)
+        r += 1
+
+    for i, w in enumerate([14, 22, 46, 16, 16, 18]):
+        ws.column_dimensions[chr(65 + i)].width = w
+    ws.freeze_panes = f"A{hrow + 1}"
+    ws.auto_filter.ref = f"A{hrow}:F{max(hrow, data_last)}"
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", c.get("unvan", "Cari")).strip("_") or "Cari"
+    rng = f"{(start or 'tum')}_{(end or 'guncel')}"
+    fname = f"{safe}_Cari_Ekstre_{rng}.xlsx"
+    return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                              headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 # ---------------- documents (Mükellef Evrak Yönetimi) ----------------

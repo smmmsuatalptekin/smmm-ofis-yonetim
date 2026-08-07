@@ -11,8 +11,9 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import ClientDocuments from "@/components/ClientDocuments";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
-import { ArrowLeft, Phone, Mail, MapPin, Plus, Trash2, Pencil, FileDown, ArrowUpDown } from "lucide-react";
+import { ArrowLeft, Phone, Mail, MapPin, Plus, Trash2, Pencil, FileDown, ArrowUpDown, FileText, FileSpreadsheet, Search, Wallet, X } from "lucide-react";
 
 export default function ClientDetail() {
   const { id } = useParams();
@@ -23,11 +24,16 @@ export default function ClientDetail() {
   const [txn, setTxn] = useState({ type: "alacak", amount: "", aciklama: "", yontem: "Havale", date: todayISO() });
   const [sortAsc, setSortAsc] = useState(false);
   const [editTxn, setEditTxn] = useState(null);
-  const [pdfOpen, setPdfOpen] = useState(false);
-  const [pdfRange, setPdfRange] = useState({ all: true, start: "", end: "" });
-  const [pdfLoading, setPdfLoading] = useState(false);
+  const [range, setRange] = useState({ start: "", end: "" });
+  const [applied, setApplied] = useState(false);
+  const [search, setSearch] = useState("");
+  const [openOB, setOpenOB] = useState(false);
+  const [ob, setOB] = useState({ date: todayISO(), direction: "borc", amount: "", aciklama: "" });
 
-  const loadCari = () => api.get(`/clients/${id}/transactions`).then((r) => setCari(r.data));
+  const loadCari = (r) => {
+    const params = (r && r.start && r.end) ? { start: r.start, end: r.end } : {};
+    return api.get(`/clients/${id}/transactions`, { params }).then((res) => setCari(res.data));
+  };
   useEffect(() => {
     api.get(`/clients/${id}`).then((r) => setC(r.data));
     loadCari();
@@ -43,7 +49,7 @@ export default function ClientDetail() {
       await api.post("/transactions", { ...txn, client_id: id, amount: Number(txn.amount) });
       toast.success("Cari hareket eklendi");
       setTxn({ type: "alacak", amount: "", aciklama: "", yontem: "Havale", date: todayISO() });
-      loadCari();
+      loadCari(applied ? range : undefined);
     } catch (e) { toast.error(e.response?.data?.detail || "Hareket eklenemedi"); }
   };
   const saveEdit = async () => {
@@ -54,40 +60,67 @@ export default function ClientDetail() {
         client_id: id, type: editTxn.type, amount: Number(editTxn.amount),
         aciklama: editTxn.aciklama, date: editTxn.date,
       });
-      toast.success("Hareket güncellendi"); setEditTxn(null); loadCari();
+      toast.success("Hareket güncellendi"); setEditTxn(null); loadCari(applied ? range : undefined);
     } catch (e) { toast.error(e.response?.data?.detail || "Güncellenemedi"); }
   };
   const delTxn = async (tid) => {
-    try { await api.delete(`/transactions/${tid}`); toast.success("Hareket silindi"); loadCari(); }
+    try { await api.delete(`/transactions/${tid}`); toast.success("Hareket silindi"); loadCari(applied ? range : undefined); }
     catch (e) { toast.error("Silinemedi"); }
   };
 
-  const downloadPdf = async () => {
-    setPdfLoading(true);
+  const downloadFile = async (fmt) => {
+    const params = {};
+    if (applied && range.start && range.end) { params.start = range.start; params.end = range.end; }
+    const mime = fmt === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "application/pdf";
     try {
-      const params = {};
-      if (!pdfRange.all) {
-        if (!pdfRange.start || !pdfRange.end) { setPdfLoading(false); return toast.error("Başlangıç ve bitiş tarihi seçin"); }
-        params.start = pdfRange.start; params.end = pdfRange.end;
-      }
-      const res = await api.get(`/clients/${id}/statement/pdf`, { params, responseType: "blob" });
-      const url = window.URL.createObjectURL(new Blob([res.data], { type: "application/pdf" }));
+      const res = await api.get(`/clients/${id}/statement/${fmt}`, { params, responseType: "blob" });
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: mime }));
       const a = document.createElement("a");
       const safe = (c.unvan || "Cari").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_|_$/g, "");
-      const rng = pdfRange.all ? "Tum_Hareketler" : `${pdfRange.start}_${pdfRange.end}`;
-      a.href = url; a.download = `${safe}_Cari_Ekstre_${rng}.pdf`;
+      const rng = (applied && range.start) ? `${range.start}_${range.end}` : "Tum_Hareketler";
+      a.href = url; a.download = `${safe}_Cari_Ekstre_${rng}.${fmt}`;
       document.body.appendChild(a); a.click(); a.remove();
       window.URL.revokeObjectURL(url);
-      toast.success("PDF ekstre indirildi"); setPdfOpen(false);
-    } catch (e) { toast.error("PDF oluşturulamadı"); }
-    finally { setPdfLoading(false); }
+      toast.success(`${fmt.toUpperCase()} ekstre indirildi`);
+    } catch (e) { toast.error("Ekstre oluşturulamadı"); }
   };
 
-  const sortedTxns = cari ? [...cari.transactions].sort((a, b) => {
-    const da = (a.date || a.created_at || "").slice(0, 10);
-    const dbb = (b.date || b.created_at || "").slice(0, 10);
-    return sortAsc ? da.localeCompare(dbb) : dbb.localeCompare(da);
-  }) : [];
+  const quick = (k) => {
+    const now = new Date(), y = now.getFullYear(), m = now.getMonth();
+    const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    if (k === "all") { setRange({ start: "", end: "" }); setApplied(false); loadCari(); return; }
+    let s, e;
+    if (k === "thisMonth") { s = iso(new Date(y, m, 1)); e = iso(new Date(y, m + 1, 0)); }
+    else if (k === "lastMonth") { s = iso(new Date(y, m - 1, 1)); e = iso(new Date(y, m, 0)); }
+    else if (k === "thisYear") { s = `${y}-01-01`; e = `${y}-12-31`; }
+    else { s = `${y - 1}-01-01`; e = `${y - 1}-12-31`; }
+    const nr = { start: s, end: e }; setRange(nr); setApplied(true); loadCari(nr);
+  };
+
+  const saveOpening = async (force = false) => {
+    if (!ob.amount) return toast.error("Tutar girin");
+    try {
+      await api.post(`/clients/${id}/opening-balance`, { ...ob, amount: Number(ob.amount), force });
+      toast.success("Açılış / devir bakiyesi kaydedildi"); setOpenOB(false);
+      loadCari(applied ? range : undefined);
+    } catch (e) {
+      if (e.response?.status === 409) {
+        if (window.confirm("Bu mükellef için zaten bir açılış bakiyesi var. Değiştirilsin mi?")) return saveOpening(true);
+      } else toast.error(e.response?.data?.detail || "Kaydedilemedi");
+    }
+  };
+
+  const visibleTxns = (cari?.transactions || [])
+    .filter((t) => {
+      if (!search) return true;
+      const lbl = t.kind === "acilis" ? "devir açılış bakiyesi" : (t.type === "borc" ? "borç tahakkuk" : "tahsilat");
+      const s = search.toLowerCase();
+      return (t.aciklama || "").toLowerCase().includes(s) || lbl.includes(s);
+    })
+    .sort((a, b) => {
+      const da = (a.date || a.created_at || "").slice(0, 10), dbb = (b.date || b.created_at || "").slice(0, 10);
+      return sortAsc ? da.localeCompare(dbb) : dbb.localeCompare(da);
+    });
 
   const info = [["Vergi Kimlik No", c.vkn], ["TC Kimlik No", c.tckn], ["Vergi Dairesi", c.vergi_dairesi],
     ["Şirket Türü", c.sirket_turu], ["NACE", c.nace], ["Faaliyet", c.faaliyet], ["Yetkili", c.yetkili],
@@ -143,22 +176,46 @@ export default function ClientDetail() {
         </TabsContent>
 
         <TabsContent value="cari">
-          <div className="grid grid-cols-3 gap-4 mb-4">
-            <Card className="p-4"><div className="text-xs text-muted-foreground uppercase">Borç (Tahakkuk)</div><div className="font-head text-xl font-semibold mt-1">{cari ? fmtTL(cari.borc) : "..."}</div></Card>
-            <Card className="p-4"><div className="text-xs text-muted-foreground uppercase">Alacak (Tahsilat)</div><div className="font-head text-xl font-semibold mt-1 text-emerald-600">{cari ? fmtTL(cari.alacak) : "..."}</div></Card>
-            <Card className="p-4"><div className="text-xs text-muted-foreground uppercase">Bakiye</div><div className="font-head text-xl font-semibold mt-1 text-rose-600">{cari ? fmtTL(cari.bakiye) : "..."}</div></Card>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+            {applied ? (<>
+              <Card className="p-4"><div className="text-xs text-muted-foreground uppercase">Dönem Başı</div><div className="font-head text-xl font-semibold mt-1">{cari ? fmtTL(cari.opening_balance) : "..."}</div></Card>
+              <Card className="p-4"><div className="text-xs text-muted-foreground uppercase">Dönem Borç</div><div className="font-head text-xl font-semibold mt-1">{cari ? fmtTL(cari.period_borc) : "..."}</div></Card>
+              <Card className="p-4"><div className="text-xs text-muted-foreground uppercase">Dönem Alacak</div><div className="font-head text-xl font-semibold mt-1 text-emerald-600">{cari ? fmtTL(cari.period_alacak) : "..."}</div></Card>
+              <Card className="p-4"><div className="text-xs text-muted-foreground uppercase">Dönem Sonu</div><div className="font-head text-xl font-semibold mt-1 text-rose-600">{cari ? fmtTL(cari.period_end_balance) : "..."}</div></Card>
+            </>) : (<>
+              <Card className="p-4"><div className="text-xs text-muted-foreground uppercase">Borç (Tahakkuk)</div><div className="font-head text-xl font-semibold mt-1">{cari ? fmtTL(cari.borc) : "..."}</div></Card>
+              <Card className="p-4"><div className="text-xs text-muted-foreground uppercase">Alacak (Tahsilat)</div><div className="font-head text-xl font-semibold mt-1 text-emerald-600">{cari ? fmtTL(cari.alacak) : "..."}</div></Card>
+              <Card className="p-4 lg:col-span-2"><div className="text-xs text-muted-foreground uppercase">Bakiye</div><div className="font-head text-xl font-semibold mt-1 text-rose-600">{cari ? fmtTL(cari.bakiye) : "..."}</div></Card>
+            </>)}
           </div>
-          <Card className="p-4 mb-4">
-            <div className="flex items-center justify-between mb-3">
-              <h4 className="font-head font-medium text-sm">Yeni Cari Hareket</h4>
-              <Button variant="outline" size="sm" data-testid="pdf-ekstre-btn" onClick={() => setPdfOpen(true)}>
-                <FileDown size={15} className="mr-1.5" /> PDF Ekstre Al
-              </Button>
+
+          <Card className="p-4 mb-4 space-y-3">
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="space-y-1"><Label className="text-xs">Başlangıç</Label><Input data-testid="cari-start" type="date" className="w-36" value={range.start} onChange={(e) => setRange({ ...range, start: e.target.value })} /></div>
+              <div className="space-y-1"><Label className="text-xs">Bitiş</Label><Input data-testid="cari-end" type="date" className="w-36" value={range.end} onChange={(e) => setRange({ ...range, end: e.target.value })} /></div>
+              <Button data-testid="cari-filter-btn" variant="secondary" onClick={() => { if (!range.start || !range.end) return toast.error("Tarih aralığı seçin"); setApplied(true); loadCari(range); }}>Filtrele</Button>
+              {applied && <Button data-testid="cari-clear-btn" variant="ghost" onClick={() => { setRange({ start: "", end: "" }); setApplied(false); loadCari(); }}><X size={14} className="mr-1" />Temizle</Button>}
+              <div className="relative flex-1 min-w-[160px]"><Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" /><Input data-testid="cari-search" className="pl-8" placeholder="Açıklama/işlem türü ara..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
+              <Button variant="outline" size="sm" data-testid="ob-btn" onClick={() => setOpenOB(true)}><Wallet size={15} className="mr-1.5" />Açılış Bakiyesi</Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild><Button size="sm" data-testid="ekstre-btn"><FileDown size={15} className="mr-1.5" />Ekstre Al</Button></DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem data-testid="export-pdf" onClick={() => downloadFile("pdf")}><FileText size={14} className="mr-2" />PDF</DropdownMenuItem>
+                  <DropdownMenuItem data-testid="export-xlsx" onClick={() => downloadFile("xlsx")}><FileSpreadsheet size={14} className="mr-2" />Excel</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
+            <div className="flex flex-wrap gap-1.5">
+              {[["thisMonth", "Bu Ay"], ["lastMonth", "Geçen Ay"], ["thisYear", "Bu Yıl"], ["lastYear", "Geçen Yıl"], ["all", "Tüm Hareketler"]].map(([k, l]) => (
+                <button key={k} data-testid={`quick-${k}`} onClick={() => quick(k)} className="text-xs px-2.5 py-1 rounded-full border border-border hover:bg-accent transition-colors">{l}</button>
+              ))}
+            </div>
+          </Card>
+
+          <Card className="p-4 mb-4">
+            <h4 className="font-head font-medium text-sm mb-3">Yeni Cari Hareket</h4>
             <div className="flex flex-wrap items-end gap-3">
-              <div className="space-y-1"><Label className="text-xs">İşlem Tarihi *</Label>
-                <Input data-testid="txn-date" type="date" className="w-40" value={txn.date} onChange={(e) => setTxn({ ...txn, date: e.target.value })} />
-              </div>
+              <div className="space-y-1"><Label className="text-xs">İşlem Tarihi *</Label><Input data-testid="txn-date" type="date" className="w-40" value={txn.date} onChange={(e) => setTxn({ ...txn, date: e.target.value })} /></div>
               <div className="space-y-1"><Label className="text-xs">Tür</Label>
                 <Select value={txn.type} onValueChange={(v) => setTxn({ ...txn, type: v })}>
                   <SelectTrigger className="w-32" data-testid="txn-type"><SelectValue /></SelectTrigger>
@@ -170,26 +227,33 @@ export default function ClientDetail() {
               <Button data-testid="add-txn-btn" onClick={addTxn}><Plus size={16} className="mr-1" /> Ekle</Button>
             </div>
           </Card>
+
           <Card className="overflow-hidden">
             <table className="w-full text-sm">
               <thead className="bg-secondary/60 text-xs uppercase text-muted-foreground"><tr>
                 <th className="text-left px-4 py-2.5 font-medium">
-                  <button data-testid="sort-date-btn" onClick={() => setSortAsc((s) => !s)} className="inline-flex items-center gap-1 hover:text-foreground">
-                    Tarih <ArrowUpDown size={12} />
-                  </button>
+                  <button data-testid="sort-date-btn" onClick={() => setSortAsc((s) => !s)} className="inline-flex items-center gap-1 hover:text-foreground">Tarih <ArrowUpDown size={12} /></button>
                 </th>
                 <th className="text-left px-4 py-2.5 font-medium">İşlem Türü</th>
                 <th className="text-left px-4 py-2.5 font-medium">Açıklama</th>
-                <th className="text-right px-4 py-2.5 font-medium">Borç</th><th className="text-right px-4 py-2.5 font-medium">Alacak</th><th className="w-16"></th>
+                <th className="text-right px-4 py-2.5 font-medium">Borç</th>
+                <th className="text-right px-4 py-2.5 font-medium">Alacak</th>
+                <th className="text-right px-4 py-2.5 font-medium">Bakiye</th>
+                <th className="w-16"></th>
               </tr></thead>
               <tbody>
-                {sortedTxns.map((t) => (
+                {visibleTxns.map((t) => (
                   <tr key={t.id} data-testid={`txn-row-${t.id}`} className="border-t border-border">
                     <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">{fmtDate(t.date || t.created_at)}</td>
-                    <td className="px-4 py-2.5"><span className={`text-xs px-2 py-0.5 rounded ${t.type === "borc" ? "bg-slate-100 text-slate-600 dark:bg-slate-500/10 dark:text-slate-400" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400"}`}>{t.type === "borc" ? "Borç/Tahakkuk" : "Tahsilat"}</span></td>
+                    <td className="px-4 py-2.5">
+                      <span className={`text-xs px-2 py-0.5 rounded ${t.kind === "acilis" ? "bg-blue-100 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400" : t.type === "borc" ? "bg-slate-100 text-slate-600 dark:bg-slate-500/10 dark:text-slate-400" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400"}`}>
+                        {t.kind === "acilis" ? "Devir / Açılış Bakiyesi" : t.type === "borc" ? "Borç/Tahakkuk" : "Tahsilat"}
+                      </span>
+                    </td>
                     <td className="px-4 py-2.5">{t.aciklama}</td>
                     <td className="px-4 py-2.5 text-right">{t.type === "borc" ? fmtTL(t.amount) : "—"}</td>
                     <td className="px-4 py-2.5 text-right text-emerald-600">{t.type === "alacak" ? fmtTL(t.amount) : "—"}</td>
+                    <td className="px-4 py-2.5 text-right font-medium">{fmtTL(t.running)}</td>
                     <td className="px-2">
                       <div className="flex items-center gap-1 justify-end">
                         <button data-testid={`txn-edit-${t.id}`} onClick={() => setEditTxn({ id: t.id, type: t.type, amount: t.amount, aciklama: t.aciklama || "", date: (t.date || t.created_at || "").slice(0, 10) })} className="text-muted-foreground hover:text-blue-500"><Pencil size={14} /></button>
@@ -198,7 +262,7 @@ export default function ClientDetail() {
                     </td>
                   </tr>
                 ))}
-                {sortedTxns.length === 0 && <tr><td colSpan={6} className="text-center py-8 text-muted-foreground">Hareket yok</td></tr>}
+                {visibleTxns.length === 0 && <tr><td colSpan={7} className="text-center py-8 text-muted-foreground">Hareket yok</td></tr>}
               </tbody>
             </table>
           </Card>
@@ -252,28 +316,23 @@ export default function ClientDetail() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={pdfOpen} onOpenChange={setPdfOpen}>
+      <Dialog open={openOB} onOpenChange={setOpenOB}>
         <DialogContent>
-          <DialogHeader><DialogTitle>PDF Cari Ekstre</DialogTitle></DialogHeader>
-          <div className="space-y-4 py-2">
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <Checkbox data-testid="pdf-all-check" checked={pdfRange.all} onCheckedChange={(v) => setPdfRange({ ...pdfRange, all: !!v })} />
-              Tüm Hareketler
-            </label>
-            {!pdfRange.all && (
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5"><Label className="text-xs">Başlangıç Tarihi</Label>
-                  <Input data-testid="pdf-start" type="date" value={pdfRange.start} onChange={(e) => setPdfRange({ ...pdfRange, start: e.target.value })} /></div>
-                <div className="space-y-1.5"><Label className="text-xs">Bitiş Tarihi</Label>
-                  <Input data-testid="pdf-end" type="date" value={pdfRange.end} onChange={(e) => setPdfRange({ ...pdfRange, end: e.target.value })} /></div>
-              </div>
-            )}
+          <DialogHeader><DialogTitle>Açılış / Devir Bakiyesi</DialogTitle></DialogHeader>
+          <div className="grid grid-cols-2 gap-4 py-2">
+            <div className="space-y-1.5"><Label className="text-xs">Tarih</Label><Input data-testid="ob-date" type="date" value={ob.date} onChange={(e) => setOB({ ...ob, date: e.target.value })} /></div>
+            <div className="space-y-1.5"><Label className="text-xs">Bakiye Yönü</Label>
+              <Select value={ob.direction} onValueChange={(v) => setOB({ ...ob, direction: v })}>
+                <SelectTrigger data-testid="ob-direction"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="borc">Müşteri Borçlu</SelectItem><SelectItem value="alacak">Müşteri Alacaklı</SelectItem></SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5"><Label className="text-xs">Tutar (TL)</Label><Input data-testid="ob-amount" type="number" value={ob.amount} onChange={(e) => setOB({ ...ob, amount: e.target.value })} /></div>
+            <div className="space-y-1.5"><Label className="text-xs">Açıklama</Label><Input data-testid="ob-desc" value={ob.aciklama} onChange={(e) => setOB({ ...ob, aciklama: e.target.value })} placeholder="Devir Bakiyesi" /></div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setPdfOpen(false)}>İptal</Button>
-            <Button data-testid="download-pdf-btn" onClick={downloadPdf} disabled={pdfLoading}>
-              <FileDown size={15} className="mr-1.5" /> {pdfLoading ? "Oluşturuluyor..." : "İndir"}
-            </Button>
+            <Button variant="outline" onClick={() => setOpenOB(false)}>İptal</Button>
+            <Button data-testid="ob-save" onClick={() => saveOpening(false)}>Kaydet</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
