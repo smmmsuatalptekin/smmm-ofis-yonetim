@@ -1,0 +1,120 @@
+{
+  "theme": "light_and_dark",
+  "archetype": "Swiss & High-Contrast (Authority, Clarity, Truth)",
+  "philosophy": "Minimal, Premium, Corporate, Fast, Responsive. Avoid complex screens of old-style accounting programs. Desktop-first, data-dense but easy on the eyes.",
+  "typography": {
+    "fonts_to_install": [
+      "@fontsource/ibm-plex-sans",
+      "@fontsource/inter"
+    ],
+    "headings": {
+      "family": "IBM Plex Sans",
+      "weights": ["400", "500", "600", "700"],
+      "classes": "font-sans tracking-tight"
+    },
+    "body": {
+      "family": "Inter",
+      "weights": ["400", "500", "600"],
+      "classes": "font-sans text-base leading-relaxed"
+    },
+    "hierarchy": {
+      "h1": "text-3xl sm:text-4xl font-semibold tracking-tight",
+      "h2": "text-2xl sm:text-3xl font-medium tracking-tight",
+      "h3": "text-xl sm:text-2xl font-medium",
+      "h4": "text-lg sm:text-xl font-medium",
+      "body": "text-sm md:text-base",
+      "small_labels": "text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground"
+    }
+  },
+  "colors": {
+    "strategy": "Restrained monochrome base. Colors are exclusively reserved for semantic states (status, alerts, success) to guide the accountant's attention.",
+    "light": {
+      "background": "bg-slate-50",
+      "surface": "bg-white",
+      "primary": "bg-slate-900 text-white",
+      "border": "border-slate-200",
+      "muted": "bg-slate-100 text-slate-500"
+    },
+    "dark": {
+      "background": "bg-zinc-950",
+      "surface": "bg-zinc-900",
+      "primary": "bg-white text-zinc-900",
+      "border": "border-zinc-800",
+      "muted": "bg-zinc-800 text-zinc-400"
+    },
+    "status": {
+      "completed": "text-emerald-700 bg-emerald-100/50 dark:bg-emerald-500/10 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20",
+      "waiting": "text-slate-700 bg-slate-100/50 dark:bg-slate-500/10 dark:text-slate-400 border border-slate-200 dark:border-slate-500/20",
+      "in_progress": "text-blue-700 bg-blue-100/50 dark:bg-blue-500/10 dark:text-blue-400 border border-blue-200 dark:border-blue-500/20",
+      "upcoming": "text-amber-700 bg-amber-100/50 dark:bg-amber-500/10 dark:text-amber-400 border border-amber-200 dark:border-amber-500/20",
+      "critical": "text-orange-700 bg-orange-100/50 dark:bg-orange-500/10 dark:text-orange-400 border border-orange-200 dark:border-orange-500/20",
+      "overdue": "text-rose-700 bg-rose-100/50 dark:bg-rose-500/10 dark:text-rose-400 border border-rose-200 dark:border-rose-500/20"
+    }
+  },
+  "layouts": {
+    "strategy": "High-hierarchy, modular layout. Strict grid hierarchy, dense and compact spacing.",
+    "container": "w-full min-h-screen flex bg-background",
+    "sidebar": {
+      "classes": "w-64 fixed left-0 top-0 h-screen border-r bg-surface z-40 hidden lg:flex lg:flex-col",
+      "menu_items": ["Dashboard", "Mükellefler", "Beyannameler", "e-Defter", "e-Tebligat", "SGK/Bordro", "Görevler", "Cari Hesap", "Tahsilatlar", "Belgeler", "Takvim", "Raporlar", "Bildirimler", "Personel", "Ayarlar"]
+    },
+    "header": "h-16 border-b bg-surface/80 backdrop-blur-xl sticky top-0 z-30 px-6 flex items-center justify-between",
+    "main_content": "flex-1 ml-0 lg:ml-64 flex flex-col min-h-screen",
+    "content_area": "flex-1 p-6 lg:p-8 space-y-6"
+  },
+  "grids": {
+    "bento_dashboard": "grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6",
+    "kpi_strip": "col-span-1 md:col-span-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4",
+    "main_chart": "col-span-1 md:col-span-2 lg:col-span-3 min-h-[300px]",
+    "side_widget": "col-span-1 lg:col-span-1 min-h-[300px] flex flex-col gap-4"
+  },
+  "visual_enhancers": {
+    "cards": "Flat background, 1px subtle border, no shadow by default. Hover: slight lift (-translate-y-1), subtle shadow (shadow-sm), border color darkens.",
+    "table": "Dense structure. Small text (text-sm). Custom stylized checkboxes. Sticky headers for declaration tracking.",
+    "inputs": "Neumorphic subtle 1px border. No heavy shadows. Focus ring should be 2px of primary color with high contrast."
+  },
+  "motion": {
+    "hover": "transition-colors duration-200 ease-in-out",
+    "active": "active:scale-[0.98] transition-transform",
+    "lists": "staggered entrance animations using framer-motion or simple CSS fade-in",
+    "dropdowns": "animate-in fade-in zoom-in-95 duration-150"
+  },
+  "accessibility": {
+    "focus": "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+    "testing": "All interactive elements MUST include data-testid attributes (e.g. data-testid='sidebar-nav-dashboard')",
+    "contrast": "Text over backgrounds must meet 4.5:1 ratio. Ensure hover states clearly change color or background."
+  },
+  "components_needed": [
+    "card",
+    "button",
+    "table",
+    "badge",
+    "input",
+    "select",
+    "tabs",
+    "dropdown-menu",
+    "calendar",
+    "dialog",
+    "checkbox",
+    "command",
+    "avatar"
+  ],
+  "libraries": {
+    "icons": "lucide-react",
+    "charts": "recharts (integrated via Shadcn Charts)",
+    "toasts": "sonner",
+    "motion": "framer-motion"
+  },
+  "instructions_to_main_agent": [
+    "Install and set up required shadcn components using standard CLI.",
+    "Ensure global layout has a responsive Sidebar (hidden on mobile, toggleable via hamburger, static on desktop).",
+    "Implement the Dashboard with KPI cards for active taxpayers, upcoming deadlines, overdue items, and receivables.",
+    "The 'Beyannameler' (Declarations) page MUST be a highly dense, spreadsheet-like grid. Rows = Taxpayers, Columns = Declarations (KDV, Muhtasar, etc.) with checkboxes and status colors.",
+    "Implement the Ctrl+K Command Palette using Shadcn 'command' component, allowing global navigation to major modules.",
+    "Integrate a Light/Dark theme toggle button in the header or sidebar.",
+    "Ensure all semantic colors (Completed, Waiting, Critical, etc.) are strictly followed using the mapped colors.",
+    "CRITICAL: DO NOT use complete transparent backgrounds in headers or overlays.",
+    "Ensure all buttons, inputs, links, and actionable items have appropriate data-testid attributes."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": "You tend to converge toward generic outputs. Avoid the 'AI slop' aesthetic. Create distinctive frontends that surprise and delight. DO NOT use dark colors as gradients. Avoid generic centered layouts and simplistic gradients. Create depth through layered design elements with z-index hierarchy. Use glass-morphism effects with backdrop filters (12-24px blur) on sticky headers. You MUST NOT apply universal transition (e.g., transition: all). You MUST NOT center align the app container in CSS. Always use modern button styles. NEVER use AI assistant Emoji characters. Every interaction needs micro-animations. Use 2-3x more spacing than feels comfortable. Prioritize crisp, accessible UI for data-dense tables."
+}
