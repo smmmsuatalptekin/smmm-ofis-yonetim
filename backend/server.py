@@ -11,7 +11,10 @@ import calendar as _cal
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional, Any
 from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
+import io
+import re
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 from bson import ObjectId
@@ -302,10 +305,163 @@ async def create_transaction(body: dict, user=Depends(get_current_user)):
     body["_id"] = r.inserted_id
     return serialize(body)
 
+@api.put("/transactions/{tid}")
+async def update_transaction(tid: str, body: dict, user=Depends(get_current_user)):
+    body.pop("id", None); body.pop("_id", None)
+    if "amount" in body:
+        body["amount"] = float(body["amount"])
+    body["updated_at"] = now_utc().isoformat()
+    await db.transactions.update_one({"_id": ObjectId(tid)}, {"$set": body})
+    await log_audit(user, "update", "transaction", body.get("client_id"), f"{body.get('type')} {body.get('amount')}")
+    doc = await db.transactions.find_one({"_id": ObjectId(tid)})
+    return serialize(doc)
+
 @api.delete("/transactions/{tid}")
 async def delete_transaction(tid: str, user=Depends(get_current_user)):
     await db.transactions.delete_one({"_id": ObjectId(tid)})
     return {"ok": True}
+
+# ---------------- cari statement PDF ----------------
+def _tl(n):
+    s = f"{abs(n):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return ("-" if n < 0 else "") + s + " TL"
+
+def _txn_date(t):
+    d = t.get("date")
+    if d:
+        return str(d)[:10]
+    ca = t.get("created_at")
+    return str(ca)[:10] if ca else ""
+
+def _tr_date(iso):
+    if not iso or len(iso) < 10:
+        return iso or "-"
+    y, m, d = iso[:4], iso[5:7], iso[8:10]
+    return f"{d}.{m}.{y}"
+
+_FONTS_READY = False
+def _ensure_fonts():
+    global _FONTS_READY
+    if _FONTS_READY:
+        return
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    base = "/usr/share/fonts/truetype/dejavu"
+    pdfmetrics.registerFont(TTFont("DejaVu", f"{base}/DejaVuSans.ttf"))
+    pdfmetrics.registerFont(TTFont("DejaVu-Bold", f"{base}/DejaVuSans-Bold.ttf"))
+    _FONTS_READY = True
+
+@api.get("/clients/{cid}/statement/pdf")
+async def statement_pdf(cid: str, start: Optional[str] = None, end: Optional[str] = None, user=Depends(get_current_user)):
+    c = await db.clients.find_one({"_id": ObjectId(cid)})
+    if not c:
+        raise HTTPException(404, "Mükellef bulunamadı")
+    txns = await db.transactions.find({"client_id": cid}).to_list(20000)
+    # backward-compatible ordering by real transaction date, then insertion time
+    txns.sort(key=lambda t: (_txn_date(t) or "0000-00-00", str(t.get("created_at") or "")))
+    if start:
+        txns = [t for t in txns if _txn_date(t) >= start]
+    if end:
+        txns = [t for t in txns if _txn_date(t) <= end]
+
+    _ensure_fonts()
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=18 * mm, bottomMargin=18 * mm,
+                            leftMargin=15 * mm, rightMargin=15 * mm, title="Cari Hesap Ekstresi")
+    title_st = ParagraphStyle("t", fontName="DejaVu-Bold", fontSize=16, leading=20, alignment=1, spaceAfter=2)
+    sub_st = ParagraphStyle("s", fontName="DejaVu", fontSize=9, leading=13, alignment=1, textColor=colors.HexColor("#64748b"))
+    lbl_st = ParagraphStyle("l", fontName="DejaVu", fontSize=9.5, leading=15)
+    cell = ParagraphStyle("c", fontName="DejaVu", fontSize=8.5, leading=11)
+
+    elems = [Paragraph("CARİ HESAP EKSTRESİ", title_st), Spacer(1, 4)]
+    unvan = c.get("unvan", "-")
+    vkn = c.get("vkn") or c.get("tckn") or "-"
+    if start or end:
+        aralik = f"{_tr_date(start) if start else 'Başlangıç'} - {_tr_date(end) if end else 'Bugün'}"
+    else:
+        aralik = "Tüm Hareketler"
+    elems.append(Paragraph(f"<b>{unvan}</b>", ParagraphStyle("f", fontName="DejaVu-Bold", fontSize=11, leading=15, alignment=1)))
+    elems.append(Paragraph(f"VKN/TCKN: {vkn}", sub_st))
+    elems.append(Paragraph(f"Rapor Aralığı: {aralik}", sub_st))
+    elems.append(Paragraph(f"Oluşturma Tarihi: {_tr_date(now_utc().date().isoformat())}", sub_st))
+    elems.append(Spacer(1, 10))
+
+    header = ["Tarih", "İşlem Türü", "Açıklama", "Borç", "Alacak", "Bakiye"]
+    data = [header]
+    running = 0.0
+    total_borc = 0.0
+    total_alacak = 0.0
+    for t in txns:
+        amt = float(t.get("amount") or 0)
+        is_borc = t.get("type") == "borc"
+        if is_borc:
+            running += amt; total_borc += amt
+        else:
+            running -= amt; total_alacak += amt
+        data.append([
+            Paragraph(_tr_date(_txn_date(t)), cell),
+            Paragraph("Borç/Tahakkuk" if is_borc else "Tahsilat", cell),
+            Paragraph((t.get("aciklama") or "-"), cell),
+            Paragraph(_tl(amt) if is_borc else "-", cell),
+            Paragraph(_tl(amt) if not is_borc else "-", cell),
+            Paragraph(_tl(running), cell),
+        ])
+    if len(data) == 1:
+        data.append([Paragraph("Bu aralıkta hareket bulunmamaktadır.", cell), "", "", "", "", ""])
+
+    tbl = Table(data, colWidths=[22 * mm, 26 * mm, 58 * mm, 24 * mm, 24 * mm, 26 * mm], repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "DejaVu"),
+        ("FONTNAME", (0, 0), (-1, 0), "DejaVu-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 8.5),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("ALIGN", (3, 0), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.4, colors.HexColor("#e2e8f0")),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elems.append(tbl)
+    elems.append(Spacer(1, 14))
+
+    bakiye = total_borc - total_alacak
+    summary = Table([
+        ["Toplam Borç", _tl(total_borc)],
+        ["Toplam Alacak", _tl(total_alacak)],
+        ["Güncel Bakiye", _tl(bakiye)],
+    ], colWidths=[40 * mm, 40 * mm], hAlign="RIGHT")
+    summary.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "DejaVu"),
+        ("FONTNAME", (0, 2), (-1, 2), "DejaVu-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LINEABOVE", (0, 2), (-1, 2), 0.8, colors.HexColor("#0f172a")),
+        ("TEXTCOLOR", (1, 2), (1, 2), colors.HexColor("#e11d48") if bakiye > 0 else colors.HexColor("#059669")),
+    ]))
+    elems.append(summary)
+    elems.append(Spacer(1, 18))
+    elems.append(Paragraph("Bu ekstre SMMM Ofis Yönetim Platformu tarafından oluşturulmuştur.",
+                           ParagraphStyle("ft", fontName="DejaVu", fontSize=7.5, textColor=colors.HexColor("#94a3b8"), alignment=1)))
+
+    doc.build(elems)
+    buf.seek(0)
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", unvan).strip("_") or "Cari"
+    rng = f"{(start or 'tum')}_{(end or 'guncel')}"
+    fname = f"{safe}_Cari_Ekstre_{rng}.pdf"
+    return StreamingResponse(buf, media_type="application/pdf",
+                             headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 @api.post("/accrual/run")
 async def run_accrual(body: dict, user=Depends(get_current_user)):

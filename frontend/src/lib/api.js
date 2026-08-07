@@ -35,4 +35,13 @@ export function deadlineColor(days) {
 
 export const fmtTL = (n) => new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY", maximumFractionDigits: 0 }).format(n || 0);
 
+export function fmtDate(iso) {
+  if (!iso) return "-";
+  const s = String(iso).slice(0, 10);
+  if (s.length < 10) return s;
+  return `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(0, 4)}`;
+}
+
+export const todayISO = () => new Date().toISOString().slice(0, 10);
+
 export default api;
