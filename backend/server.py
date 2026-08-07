@@ -452,7 +452,7 @@ async def statement_pdf(cid: str, start: Optional[str] = None, end: Optional[str
     ]))
     elems.append(summary)
     elems.append(Spacer(1, 18))
-    elems.append(Paragraph("Bu ekstre SMMM Ofis Yönetim Platformu tarafından oluşturulmuştur.",
+    elems.append(Paragraph("BU EKSTRE ALPTEKİN MALİ MÜŞAVİRLİK TARAFINDAN OLUŞTURULMUŞTUR",
                            ParagraphStyle("ft", fontName="DejaVu", fontSize=7.5, textColor=colors.HexColor("#94a3b8"), alignment=1)))
 
     doc.build(elems)
