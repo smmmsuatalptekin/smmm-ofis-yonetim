@@ -1069,7 +1069,7 @@ async def gib_query(body: dict, user=Depends(get_current_user)):
     period = f"{year}-{str(month).zfill(2)}"
     clients = [serialize(c) for c in await db.clients.find({"aktif": True}).to_list(2000)]
     try:
-        rows, meta = query_period(clients, period)
+        rows, meta = await query_period(clients, period)
     except GibAuthError:
         await log_audit(user, "gib_query_error", "gib", None, f"{period} yetkilendirme hatası")
         raise HTTPException(502, "GİB yetkilendirme hatası. Kimlik bilgileri yapılandırılmamış.")
@@ -1096,6 +1096,29 @@ async def gib_query(body: dict, user=Depends(get_current_user)):
         f"dönem={period} mükellef={len(clients)} sorgu={len(matched)} eşleşmeyen={len(unmatched)} mock={meta['mock']}")
     return {"period": period, "rows": rows, "summary": summary, "last_checked_at": now,
             "mock": meta["mock"], "client_count": len(clients), "queried": len(matched), "unmatched": len(unmatched)}
+
+@api.post("/gib/test-connection")
+async def gib_test_connection(user=Depends(get_current_user)):
+    _gib_guard(user)
+    from services.gib_client import test_connection, is_mock, GibAuthError, GibUnavailableError
+    if is_mock():
+        return {"ok": True, "mock": True, "message": "MOCK MOD aktif — gerçek GİB bağlantısı kurulmadı."}
+    c = await db.clients.find_one({"aktif": True, "vkn": {"$nin": [None, ""]}})
+    sample = (c or {}).get("vkn") or (c or {}).get("tckn")
+    if not sample:
+        raise HTTPException(400, "Bağlantı testi için VKN'si olan en az bir aktif mükellef gerekir.")
+    try:
+        res = await test_connection(sample)
+    except GibAuthError as e:
+        await log_audit(user, "gib_test_error", "gib", None, "bağlantı testi yetkilendirme hatası")
+        raise HTTPException(502, str(e))
+    except GibUnavailableError as e:
+        await log_audit(user, "gib_test_error", "gib", None, "bağlantı testi servis hatası")
+        raise HTTPException(503, str(e))
+    except Exception:
+        raise HTTPException(500, "GİB bağlantı testinde beklenmeyen hata")
+    await log_audit(user, "gib_test", "gib", None, "bağlantı testi başarılı")
+    return res
 
 # ---------------- seeding ----------------
 async def seed():

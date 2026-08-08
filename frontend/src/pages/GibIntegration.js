@@ -4,7 +4,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { toast } from "sonner";
-import { RefreshCw, Landmark, ShieldCheck } from "lucide-react";
+import { RefreshCw, Landmark, ShieldCheck, PlugZap } from "lucide-react";
 
 const MONTHS = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
 const BADGE = {
@@ -13,6 +13,10 @@ const BADGE = {
   "Hatalı": "bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400",
   "Taslak": "bg-slate-100 text-slate-600 dark:bg-slate-500/10 dark:text-slate-400",
   "Bulunamadı": "bg-blue-100 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400",
+  "İptal Edildi": "bg-zinc-200 text-zinc-700 dark:bg-zinc-500/10 dark:text-zinc-400",
+  "Kopyalanıyor": "bg-sky-100 text-sky-700 dark:bg-sky-500/10 dark:text-sky-400",
+  "Silindi": "bg-neutral-200 text-neutral-600 dark:bg-neutral-500/10 dark:text-neutral-400",
+  "Sorgu Hatası": "bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400",
   "Bilinmeyen Durum": "bg-purple-100 text-purple-700 dark:bg-purple-500/10 dark:text-purple-400",
   "Eşleştirilemedi": "bg-orange-100 text-orange-700 dark:bg-orange-500/10 dark:text-orange-400",
 };
@@ -23,6 +27,7 @@ export default function GibIntegration() {
   const [month, setMonth] = useState(String(now.getMonth() + 1));
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [testing, setTesting] = useState(false);
   const period = `${year}-${String(month).padStart(2, "0")}`;
 
   const loadCache = () => api.get("/gib/results", { params: { period } }).then((r) => setData(r.data)).catch((e) => {
@@ -39,6 +44,19 @@ export default function GibIntegration() {
       toast.error(e.response?.data?.detail || "GİB sorgusu başarısız");
     } finally { setLoading(false); }
   };
+
+  const testConnection = async () => {
+    setTesting(true);
+    try {
+      const { data } = await api.post("/gib/test-connection", {});
+      if (data.mock) toast.info(data.message);
+      else toast.success(data.message);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "GİB bağlantı testi başarısız");
+    } finally { setTesting(false); }
+  };
+
+  const isMock = data?.mock !== false;
 
   const s = data?.summary || {};
   const rows = data?.rows || [];
@@ -60,6 +78,9 @@ export default function GibIntegration() {
             <SelectTrigger className="w-32" data-testid="gib-month"><SelectValue /></SelectTrigger>
             <SelectContent>{MONTHS.map((m,i)=><SelectItem key={i} value={String(i+1)}>{m}</SelectItem>)}</SelectContent>
           </Select>
+          <Button data-testid="gib-test-btn" variant="outline" onClick={testConnection} disabled={testing}>
+            <PlugZap size={15} className="mr-1.5" /> {testing ? "Test ediliyor..." : "Bağlantıyı Test Et"}
+          </Button>
           <Button data-testid="gib-query-btn" onClick={query} disabled={loading}>
             <RefreshCw size={15} className={`mr-1.5 ${loading?"animate-spin":""}`} /> {loading ? "Sorgulanıyor..." : (data?.last_checked_at ? "GİB'den Yenile" : "GİB'den Sorgula")}
           </Button>
@@ -67,7 +88,12 @@ export default function GibIntegration() {
       </div>
 
       <Card className="p-4 flex flex-wrap items-center gap-x-8 gap-y-2 text-sm">
-        <span className="flex items-center gap-1.5"><ShieldCheck size={15} className="text-emerald-600" /> Bağlantı: <b>{data?.mock ? "MOCK MOD" : (data?.connection === "ok" ? "Bağlı" : "Sorgulanmadı")}</b></span>
+        <span className="flex items-center gap-1.5" data-testid="gib-mode-badge">
+          <ShieldCheck size={15} className={isMock ? "text-amber-600" : "text-emerald-600"} /> Mod:
+          <b className={`px-2 py-0.5 rounded text-xs ${isMock ? "bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400"}`}>
+            {isMock ? "MOCK MOD" : "GERÇEK GİB"}
+          </b>
+        </span>
         <span className="text-muted-foreground">Son sorgu: <b className="text-foreground">{fmtDT(data?.last_checked_at)}</b></span>
         <span className="text-muted-foreground">Sorgulanan mükellef: <b className="text-foreground">{data?.client_count ?? rows.filter(r=>r.matched).length}</b></span>
       </Card>
@@ -108,7 +134,9 @@ export default function GibIntegration() {
           </table>
         </div>
       </Card>
-      {data?.mock && <p className="text-xs text-muted-foreground">Not: Sonuçlar <b>MOCK</b> verilerdir; gerçek GİB entegrasyonu için ortam değişkenleri ile <code>GIB_MOCK_MODE=false</code> yapılandırılır.</p>}
+      {isMock
+        ? <p className="text-xs text-muted-foreground" data-testid="gib-mock-note">Not: Sonuçlar <b>MOCK</b> verilerdir. Gerçek GİB entegrasyonu için backend ortam değişkenleri ile <code>GIB_MOCK_MODE=false</code>, <code>GIB_API_BASE_URL</code>, <code>GIB_API_TOKEN</code>, <code>GIB_INTEGRATOR_IDENTITY</code> yapılandırılır (salt-okunur eBeyanname Kullanıcı REST API).</p>
+        : <p className="text-xs text-muted-foreground" data-testid="gib-real-note">Bağlantı <b>GERÇEK GİB</b> (eBeyanname Kullanıcı REST API) üzerinden salt-okunur olarak yapılır.</p>}
     </div>
   );
 }
