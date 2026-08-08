@@ -1,0 +1,32 @@
+{
+  "summary": "Phase 2 (Dijital Vergi Dairesi e-Tebligat, DVD_MOCK_MODE=true) backend + frontend fully tested. Backend: 20/20 pytest cases in /app/backend/tests/test_dvd_etebligat.py pass — credential vault CRUD, Fernet at-rest encryption, no-plaintext-in-response guarantee, empty-body 400, e-Tebligat check BASARILI (new_count=2), dedup (new_count=0 on 2nd call), record listing, PDF served from disk with %PDF magic, all 4 controlled scenarios (fail/mfa/down/empty), client isolation (disjoint remote_tebligat_id sets), /etebligat/overview {mock:true}, POST /etebligat/check bulk results, audit_logs contain etebligat_sync + dvd_credentials_update entries with NO secrets. Frontend: /etebligat page renders MOCK MOD badge, checkbox selection + bulk check works; /mukellefler/{id} → tab-etebligat opens, dvd-cred-btn dialog saves creds, etebligat-check-btn fills table, etebligat-pdf-0 button present.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_dvd_etebligat.py",
+    "/app/test_reports/pytest/dvd_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "FIXED (by testing agent): /etebligat page crashed with 'Uncaught TypeError: destroy is not a function' because `const load = () => api.get(...).then(...)` returned a Promise and `useEffect(load, [])` treated the Promise as a cleanup function. Fixed by wrapping call: `useEffect(() => { load(); }, [])` in /app/frontend/src/pages/Etebligat.js and same pattern in /app/frontend/src/components/ClientEtebligat.js.",
+    "server.py grew to ~1361 lines — consider splitting DVD/e-Tebligat routes into a dedicated router module.",
+    "download_etebligat_pdf path traversal check uses startswith(f'{cid}/') on normalized path — good; but abs_path is not verified to be inside UPLOAD_DIR (defense-in-depth: use os.path.commonpath).",
+    "_decrypt_creds silently swallows InvalidToken per-field; consider surfacing a health/re-key warning to admin."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_dvd_etebligat.py",
+    "/app/frontend/src/pages/Etebligat.js",
+    "/app/frontend/src/components/ClientEtebligat.js"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100% after Promise-in-useEffect fix"},
+  "seed_data_creation": "Backend tests created encrypted dvd_credentials for the first two active clients and inserted mock e-Tebligat records (deterministic, dedup verified). UI test also PUT UI_TEST_KOD_A creds and ran a check. Records left in-place per request; main agent will clean.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "smmmsuatalptekin@gmail.com / Smmm2026!",
+  "context_for_next_testing_agent": "Route paths in frontend are Turkish: /mukellefler (NOT /clients), /mukellefler/{id}, /etebligat, /beyannameler, /edefter, /gib, /gorevler, /cari, /tahsilatlar, /takvim, /raporlar, /bildirimler, /asistan, /personel, /audit. Login: after Giriş, app lands on '/' (dashboard), not '/dashboard'. e-Tebligat mock produces exactly 2 records per unique kullanici_kodu (dedup by client_id + remote_tebligat_id). PDF button in ClientEtebligat is <Button onClick={dl(id)}> not an <a href>, so href attribute is null — verify PDF via backend GET /clients/{cid}/etebligat/{eid}/document (returns %PDF from disk).",
+  "rca_of_the_issue": "Runtime crash 'destroy is not a function' on /etebligat: React expects useEffect callback to return either undefined or a cleanup function. Etebligat.js used `useEffect(load, [])` where load was an arrow expression returning a Promise (from api.get(...).then(...)). At unmount, React invoked the Promise as a cleanup function → TypeError. Fixed by wrapping in a block-body callback so the effect returns undefined."
+}

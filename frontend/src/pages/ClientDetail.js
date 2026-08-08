@@ -11,6 +11,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import ClientDocuments from "@/components/ClientDocuments";
+import ClientEtebligat from "@/components/ClientEtebligat";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { ArrowLeft, Phone, Mail, MapPin, Plus, Trash2, Pencil, FileDown, ArrowUpDown, FileText, FileSpreadsheet, Search, Wallet, X } from "lucide-react";
@@ -152,6 +153,7 @@ export default function ClientDetail() {
           <TabsTrigger value="genel" data-testid="tab-genel">Genel Bilgiler</TabsTrigger>
           <TabsTrigger value="cari" data-testid="tab-cari">Cari Hesap</TabsTrigger>
           <TabsTrigger value="evraklar" data-testid="tab-evraklar">Evraklar</TabsTrigger>
+          <TabsTrigger value="etebligat" data-testid="tab-etebligat">e-Tebligat</TabsTrigger>
           <TabsTrigger value="gorevler" data-testid="tab-gorevler">Görevler</TabsTrigger>
           <TabsTrigger value="beyanname" data-testid="tab-beyanname">Beyannameler</TabsTrigger>
         </TabsList>
@@ -270,6 +272,10 @@ export default function ClientDetail() {
 
         <TabsContent value="evraklar">
           <ClientDocuments clientId={id} clientName={c.unvan} />
+        </TabsContent>
+
+        <TabsContent value="etebligat">
+          <ClientEtebligat clientId={id} />
         </TabsContent>
 
         <TabsContent value="gorevler">

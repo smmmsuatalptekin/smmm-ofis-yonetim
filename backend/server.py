@@ -1120,6 +1120,155 @@ async def gib_test_connection(user=Depends(get_current_user)):
     await log_audit(user, "gib_test", "gib", None, "bağlantı testi başarılı")
     return res
 
+# ---------------- Dijital Vergi Dairesi e-Tebligat (read-only sync) ----------------
+DVD_ROLES = {"admin", "mali_musavir", "ofis_yoneticisi", "kidemli", "muhasebe"}
+
+def _dvd_guard(user):
+    if user.get("role") not in DVD_ROLES:
+        raise HTTPException(403, "e-Tebligat için yetkiniz yok")
+
+def _cred_status(client):
+    dc = (client or {}).get("dvd_credentials") or {}
+    fields = {k: bool(dc.get(k)) for k in ("kullanici_kodu", "parola", "sifre")}
+    return {"status": "Kayıtlı" if any(fields.values()) else "Kayıtlı Değil",
+            "fields": fields, "updated_at": dc.get("updated_at")}
+
+def _decrypt_creds(client):
+    from services.dvd_crypto import decrypt_secret, has_key
+    dc = (client or {}).get("dvd_credentials") or {}
+    if not dc or not has_key():
+        return {}
+    out = {}
+    for k in ("kullanici_kodu", "parola", "sifre"):
+        if dc.get(k):
+            try:
+                out[k] = decrypt_secret(dc[k])
+            except Exception:
+                pass
+    return out
+
+@api.get("/clients/{cid}/dvd-credentials")
+async def get_dvd_credentials(cid: str, user=Depends(get_current_user)):
+    _dvd_guard(user)
+    client = await db.clients.find_one({"_id": ObjectId(cid)})
+    if not client:
+        raise HTTPException(404, "Mükellef bulunamadı")
+    return _cred_status(client)
+
+@api.put("/clients/{cid}/dvd-credentials")
+async def set_dvd_credentials(cid: str, body: dict, user=Depends(get_current_user)):
+    _dvd_guard(user)
+    from services.dvd_crypto import encrypt_secret, has_key
+    if not has_key():
+        raise HTTPException(500, "CREDENTIAL_ENCRYPTION_KEY yapılandırılmamış")
+    client = await db.clients.find_one({"_id": ObjectId(cid)})
+    if not client:
+        raise HTTPException(404, "Mükellef bulunamadı")
+    dc = dict(client.get("dvd_credentials") or {})
+    changed = False
+    for k in ("kullanici_kodu", "parola", "sifre"):
+        v = body.get(k)
+        if v:
+            dc[k] = encrypt_secret(str(v))
+            changed = True
+    if not changed:
+        raise HTTPException(400, "Güncellenecek bilgi girilmedi")
+    dc["updated_at"] = now_utc().isoformat()
+    dc["updated_by"] = user.get("name")
+    await db.clients.update_one({"_id": ObjectId(cid)}, {"$set": {"dvd_credentials": dc}})
+    await log_audit(user, "dvd_credentials_update", "client", cid, "erişim bilgileri güncellendi")
+    client = await db.clients.find_one({"_id": ObjectId(cid)})
+    return _cred_status(client)
+
+@api.delete("/clients/{cid}/dvd-credentials")
+async def delete_dvd_credentials(cid: str, user=Depends(get_current_user)):
+    _dvd_guard(user)
+    await db.clients.update_one({"_id": ObjectId(cid)}, {"$unset": {"dvd_credentials": ""}})
+    await log_audit(user, "dvd_credentials_delete", "client", cid, "erişim bilgileri silindi")
+    return {"ok": True}
+
+@api.post("/clients/{cid}/etebligat/check")
+async def check_client_etebligat(cid: str, body: Optional[dict] = None, user=Depends(get_current_user)):
+    _dvd_guard(user)
+    from services.etebligat_sync import sync_client
+    from services.dvd_client import is_mock
+    client = await db.clients.find_one({"_id": ObjectId(cid)})
+    if not client:
+        raise HTTPException(404, "Mükellef bulunamadı")
+    creds = _decrypt_creds(client)
+    if is_mock() and not creds:
+        creds = {"kullanici_kodu": (client.get("vkn") or client.get("tckn") or cid)}
+    if not creds and not is_mock():
+        raise HTTPException(400, "Önce Dijital Vergi Dairesi erişim bilgilerini kaydedin.")
+    scenario = (body or {}).get("scenario", "") if is_mock() else ""
+    return await sync_client(db, serialize(client), creds, user, UPLOAD_DIR, scenario)
+
+@api.get("/clients/{cid}/etebligat")
+async def list_client_etebligat_route(cid: str, user=Depends(get_current_user)):
+    _dvd_guard(user)
+    from services.etebligat_sync import list_client_etebligat
+    return await list_client_etebligat(db, cid)
+
+@api.get("/clients/{cid}/etebligat/{eid}/document")
+async def download_etebligat_pdf(cid: str, eid: str, inline: Optional[str] = None, user=Depends(get_current_user)):
+    _dvd_guard(user)
+    rec = await db.etebligat.find_one({"_id": ObjectId(eid), "client_id": cid})
+    if not rec or not rec.get("pdf_document_id"):
+        raise HTTPException(404, "Belge bulunamadı")
+    d = await db.documents.find_one({"_id": ObjectId(rec["pdf_document_id"]), "deleted_at": None})
+    if not d:
+        raise HTTPException(404, "Belge bulunamadı")
+    safe_rel = os.path.normpath(d["stored_key"]).replace("\\", "/")
+    if safe_rel.startswith("..") or not safe_rel.startswith(f"{cid}/"):
+        raise HTTPException(400, "Geçersiz dosya yolu")
+    abs_path = os.path.join(UPLOAD_DIR, safe_rel)
+    if not os.path.isfile(abs_path):
+        raise HTTPException(404, "Dosya fiziksel olarak bulunamadı")
+    from urllib.parse import quote
+    disp = "inline" if inline else "attachment"
+    fn = quote(d.get("original_filename", "etebligat.pdf"))
+    return FileResponse(abs_path, media_type="application/pdf",
+                        headers={"Content-Disposition": f"{disp}; filename*=UTF-8''{fn}"})
+
+@api.get("/etebligat/overview")
+async def etebligat_overview(user=Depends(get_current_user)):
+    _dvd_guard(user)
+    from services.dvd_client import is_mock
+    clients = await db.clients.find({"aktif": True}).sort("unvan", 1).to_list(2000)
+    out = []
+    for c in clients:
+        cid = str(c["_id"])
+        cnt = await db.etebligat.count_documents({"client_id": cid})
+        out.append({"id": cid, "unvan": c.get("unvan"), "vkn": c.get("vkn"), "tckn": c.get("tckn"),
+                    "cred_status": _cred_status(c)["status"], "etebligat_count": cnt})
+    return {"mock": is_mock(), "clients": out}
+
+@api.post("/etebligat/check")
+async def bulk_check_etebligat(body: dict, user=Depends(get_current_user)):
+    _dvd_guard(user)
+    from services.etebligat_sync import sync_client
+    from services.dvd_client import is_mock
+    ids = body.get("client_ids") or []
+    if not ids:
+        raise HTTPException(400, "En az bir mükellef seçin")
+    results = []
+    for cid in ids:
+        client = await db.clients.find_one({"_id": ObjectId(cid)})
+        if not client:
+            continue
+        creds = _decrypt_creds(client)
+        if is_mock() and not creds:
+            creds = {"kullanici_kodu": (client.get("vkn") or client.get("tckn") or cid)}
+        if not creds and not is_mock():
+            results.append({"client_id": cid, "unvan": client.get("unvan"), "status": "GIRIS_BASARISIZ",
+                            "message": "Erişim bilgisi kayıtlı değil", "new_count": 0})
+            continue
+        r = await sync_client(db, serialize(client), creds, user, UPLOAD_DIR,
+                              body.get("scenario", "") if is_mock() else "")
+        r["client_id"] = cid; r["unvan"] = client.get("unvan")
+        results.append(r)
+    return {"results": results}
+
 # ---------------- seeding ----------------
 async def seed():
     admin_email = os.environ["ADMIN_EMAIL"].lower()
@@ -1185,6 +1334,7 @@ async def seed():
 async def startup():
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     await db.users.create_index("email", unique=True)
+    await db.etebligat.create_index([("client_id", 1), ("remote_tebligat_id", 1)], unique=True)
     await seed()
     # write test credentials
     try:
