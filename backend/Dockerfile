@@ -11,6 +11,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir emergentintegrations --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/ || true
 
+# e-Tebligat gerçek modu için headless Chromium + sistem paketleri (DVD_MOCK_MODE=false iken kullanılır)
+RUN python -m playwright install --with-deps chromium || true
+
 COPY . .
 
 EXPOSE 8001

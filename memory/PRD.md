@@ -37,6 +37,18 @@ Admin, Mali Müşavir, Ofis Yöneticisi, Kıdemli Personel, Muhasebe, Bordro, St
 - Token asla frontend/Mongo/log/audit'e yazılmaz. Test verileri sorgu sonrası temizlendi.
 - Not: Gerçek mod yalnızca geçerli entegratör token'ı ile runtime doğrulanabilir (mock modda test edildi).
 
+## Dijital Vergi Dairesi e-Tebligat (2026-06 — v1, read-only sync) — MOCK test edildi
+- Amaç: mükellef DVD erişim bilgileriyle giriş denemesi, e-Tebligat listesini SALT OKUNUR çekme + uygulamaya aktarma. Cevap/silme/okundu değiştirme YOK, CAPTCHA/MFA bypass YOK.
+- Credential Vault: Fernet (cryptography) encryption-at-rest, `CREDENTIAL_ENCRYPTION_KEY` (env). API asla şifre döndürmez; UI "Kayıtlı / Kayıtlı Değil". clients.dvd_credentials = {kullanici_kodu,parola,sifre} ciphertext.
+- Servis katmanı: services/dvd_crypto.py, dvd_selectors.py (merkezi DOM selector — gerçek mod), dvd_client.py (mock+Playwright), etebligat_sync.py (dedup + PDF store + audit).
+- Koleksiyon: `etebligat` (unique: client_id + remote_tebligat_id; alanlar: belge_no/turu/gonderen/konu/belge_tarihi/teblig_tarihi/okunma_durumu/son_islem_tarihi/pdf_document_id). PDF'ler mevcut documents storage'a (UPLOAD_DIR) indirilir, Base64 DEĞİL.
+- Durumlar: BAŞARILI, GİRİŞ_BAŞARISIZ, MANUEL_DOGRULAMA_GEREKLI, SİSTEM_ULAŞILAMIYOR, SAYFA_YAPISI_DEĞİŞTİ, KAYIT_BULUNAMADI.
+- API: GET/PUT/DELETE /api/clients/{cid}/dvd-credentials, POST /api/clients/{cid}/etebligat/check, GET /api/clients/{cid}/etebligat, GET /api/clients/{cid}/etebligat/{eid}/document, GET /api/etebligat/overview, POST /api/etebligat/check.
+- UI: Mükellef detay > 'e-Tebligat' sekmesi + 'e-Tebligatları Kontrol Et'; /etebligat ana ekran 'Seçili Mükellefleri Kontrol Et' + MOCK MOD rozeti. İlk sürümde otomatik zamanlayıcı YOK.
+- Mock senaryo tetik: POST body {"scenario":"fail|mfa|down|empty"}; default BAŞARILI.
+- Güvenlik: kullanıcı kodu/parola/şifre/token log/audit/response'a yazılmaz. Test: backend 20/20 pytest, frontend 100% (iteration_2.json).
+- ⚠️ Gerçek Playwright otomasyonu bu ortamda CANLIYA karşı doğrulanmadı; selector'lar (dvd_selectors.py, verified=False) canlı portaldan teyit edilmeli. Local Docker: `docker compose up -d --build backend` (Dockerfile playwright chromium kurar).
+
 ## Backlog
 ### P1
 - e-Tebligat modülü (modüler connector mimarisi, manuel/dosya import)
