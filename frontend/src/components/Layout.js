@@ -5,7 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 import {
   LayoutDashboard, Users, FileCheck, BookOpen, Mail, Briefcase, ListChecks,
   Wallet, Receipt, FolderArchive, Calendar, BarChart3, Bell, UserCog,
-  Settings, Moon, Sun, LogOut, Search, ScrollText, Bot, Menu
+  Settings, Moon, Sun, LogOut, Search, ScrollText, Bot, Menu, Landmark
 } from "lucide-react";
 import CommandPalette from "@/components/CommandPalette";
 
@@ -14,6 +14,7 @@ const NAV = [
   { to: "/mukellefler", label: "Mükellefler", icon: Users },
   { to: "/beyannameler", label: "Beyannameler", icon: FileCheck },
   { to: "/edefter", label: "e-Defter", icon: BookOpen },
+  { to: "/gib", label: "GİB Entegrasyon", icon: Landmark },
   { to: "/etebligat", label: "e-Tebligat", icon: Mail },
   { to: "/gorevler", label: "Görevler", icon: ListChecks },
   { to: "/cari", label: "Cari Hesap", icon: Wallet },

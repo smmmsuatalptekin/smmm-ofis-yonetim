@@ -1039,6 +1039,64 @@ async def assistant(body: dict, user=Depends(get_current_user)):
         logger.error(f"assistant error: {e}")
         return {"answer": "Asistan şu anda yanıt veremedi. Lütfen tekrar deneyin."}
 
+# ---------------- GİB Entegrasyon (Yeni e-Beyan, read-only) ----------------
+GIB_ROLES = {"admin", "mali_musavir", "ofis_yoneticisi", "kidemli", "muhasebe"}
+
+def _gib_guard(user):
+    if user.get("role") not in GIB_ROLES:
+        raise HTTPException(403, "GİB Entegrasyon için yetkiniz yok")
+
+def _gib_summary(rows):
+    s = {"Onaylandı": 0, "Onay Bekliyor": 0, "Hatalı": 0, "Taslak": 0, "Bulunamadı": 0, "Bilinmeyen Durum": 0, "Eşleştirilemedi": 0}
+    for r in rows:
+        s[r["status"]] = s.get(r["status"], 0) + 1
+    return s
+
+@api.get("/gib/results")
+async def gib_results(period: str, user=Depends(get_current_user)):
+    _gib_guard(user)
+    doc = await db.gib_results.find_one({"period": period})
+    if not doc:
+        return {"period": period, "rows": [], "summary": _gib_summary([]), "last_checked_at": None, "mock": os.environ.get("GIB_MOCK_MODE", "true").lower() == "true", "connection": "not_queried"}
+    return {"period": period, "rows": doc.get("rows", []), "summary": doc.get("summary", {}),
+            "last_checked_at": doc.get("last_checked_at"), "mock": doc.get("mock", True), "connection": "ok"}
+
+@api.post("/gib/query")
+async def gib_query(body: dict, user=Depends(get_current_user)):
+    _gib_guard(user)
+    from services.gib_client import query_period, GibAuthError, GibUnavailableError
+    year = int(body.get("year")); month = int(body.get("month"))
+    period = f"{year}-{str(month).zfill(2)}"
+    clients = [serialize(c) for c in await db.clients.find({"aktif": True}).to_list(2000)]
+    try:
+        rows, meta = query_period(clients, period)
+    except GibAuthError:
+        await log_audit(user, "gib_query_error", "gib", None, f"{period} yetkilendirme hatası")
+        raise HTTPException(502, "GİB yetkilendirme hatası. Kimlik bilgileri yapılandırılmamış.")
+    except GibUnavailableError as e:
+        await log_audit(user, "gib_query_error", "gib", None, f"{period} servis erişilemiyor")
+        raise HTTPException(503, str(e))
+    except Exception:
+        raise HTTPException(500, "GİB sorgusunda beklenmeyen hata")
+    summary = _gib_summary(rows)
+    now = now_utc().isoformat()
+    await db.gib_results.update_one({"period": period},
+        {"$set": {"period": period, "rows": rows, "summary": summary, "last_checked_at": now, "mock": meta["mock"]}}, upsert=True)
+    # mevcut Beyannameler kayıtlarını BOZMADAN yalnızca gib_* alanlarını güncelle
+    for r in rows:
+        if not r.get("matched") or not r.get("app_type"):
+            continue
+        await db.declarations.update_one(
+            {"client_id": r["client_id"], "type": r["app_type"], "period": period},
+            {"$set": {"gib_status": r["status"], "gib_declaration_no": r.get("declaration_no"),
+                      "gib_raw_status": r.get("raw_status"), "gib_last_checked_at": now}})
+    matched = [r for r in rows if r.get("matched")]
+    unmatched = [r for r in rows if not r.get("matched")]
+    await log_audit(user, "gib_query", "gib", None,
+        f"dönem={period} mükellef={len(clients)} sorgu={len(matched)} eşleşmeyen={len(unmatched)} mock={meta['mock']}")
+    return {"period": period, "rows": rows, "summary": summary, "last_checked_at": now,
+            "mock": meta["mock"], "client_count": len(clients), "queried": len(matched), "unmatched": len(unmatched)}
+
 # ---------------- seeding ----------------
 async def seed():
     admin_email = os.environ["ADMIN_EMAIL"].lower()

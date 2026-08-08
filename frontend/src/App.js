@@ -11,6 +11,7 @@ import Clients from "@/pages/Clients";
 import ClientDetail from "@/pages/ClientDetail";
 import Declarations from "@/pages/Declarations";
 import Edefter from "@/pages/Edefter";
+import GibIntegration from "@/pages/GibIntegration";
 import Tasks from "@/pages/Tasks";
 import Cari from "@/pages/Cari";
 import Calendar from "@/pages/Calendar";
@@ -37,6 +38,7 @@ function AppRoutes() {
       <Route path="/mukellefler/:id" element={<Protected><ClientDetail /></Protected>} />
       <Route path="/beyannameler" element={<Protected><Declarations /></Protected>} />
       <Route path="/edefter" element={<Protected><Edefter /></Protected>} />
+      <Route path="/gib" element={<Protected><GibIntegration /></Protected>} />
       <Route path="/etebligat" element={<Protected><Placeholder title="e-Tebligat" desc="e-Tebligat takip modülü Faz 2'de resmi connector mimarisi ile eklenecektir." /></Protected>} />
       <Route path="/gorevler" element={<Protected><Tasks /></Protected>} />
       <Route path="/cari" element={<Protected><Cari /></Protected>} />
